@@ -1,0 +1,9 @@
+{
+  "name": "lean-guard",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that prevents modification of Lean 4 theorem statements",
+  "private": true,
+  "dependencies": {
+    "@opencode-ai/plugin": "^0.0.1"
+  }
+}
