@@ -23,14 +23,11 @@ No config files needed — the markers in the file are the entire source of trut
 
 | Tool | Blocked when |
 |------|-------------|
-| `write` | Targets a file containing guard markers |
-| `edit` | `oldString` falls within the protected region |
 | `bash` | Contains redirects, `sed -i`, `tee`, `cp`, or `mv` targeting a guarded file |
-| `apply_patch` | Mentions a guarded file path |
 
 ### Safety net (`tool.execute.after`)
 
-After any `edit`, `bash`, or `write`, the plugin re-reads guarded files and verifies the protected region is unchanged. If tampered, the file is reset to `<protected region> + "  sorry\n"` and the agent receives an error message explaining the revert.
+After any `edit` or `bash`, the plugin re-reads the proof file and verifies the protected region is unchanged. If tampered, the file is reset to `<protected region> + "  sorry\n"` and the agent receives an error message explaining the revert.
 
 ## Usage
 
@@ -40,7 +37,7 @@ The `opencode_lean` environment injects the markers into proof files and uploads
 
 ```bash
 # In a lean-tactic container with opencode installed:
-cat > /tmp/proof.lean << 'EOF'
+cat > /workspace/mathlib4/proof.lean << 'EOF'
 import Mathlib
 
 -- lean-guard: begin protected
@@ -50,7 +47,7 @@ theorem foo : 1 + 1 = 2 := by
 EOF
 
 cp /path/to/lean-guard/src/index.ts ~/.config/opencode/plugins/lean-guard.ts
-opencode run "Prove the theorem in /tmp/proof.lean"
+LEAN_GUARD_FILE=/workspace/mathlib4/proof.lean opencode run "Prove the theorem in /workspace/mathlib4/proof.lean"
 ```
 
 ## Integration
