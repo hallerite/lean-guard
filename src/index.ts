@@ -1,23 +1,20 @@
-import { plugin } from "@opencode-ai/plugin";
-import { readFileSync, writeFileSync, existsSync, readdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync } from "fs";
+import type { Plugin } from "@opencode-ai/plugin";
 
 const BEGIN_MARKER = "-- lean-guard: begin protected";
 const END_MARKER = "-- lean-guard: end protected";
 
-const PROOF_FILE = process.env.LEAN_GUARD_FILE;
-if (!PROOF_FILE) {
-  throw new Error("[lean-guard] LEAN_GUARD_FILE environment variable is required.");
-}
+const PROOF_FILE = process.env.LEAN_GUARD_FILE ?? "";
 
 interface GuardInfo {
   filePath: string;
   protectedText: string;
 }
 
-const guardCache = new Map<string, GuardInfo>();
+let guard: GuardInfo | null = null;
 
 function parseGuardedFile(filePath: string): GuardInfo | null {
-  if (!existsSync(filePath)) return null;
+  if (!filePath || !existsSync(filePath)) return null;
 
   const content = readFileSync(filePath, "utf-8");
   const beginIdx = content.indexOf(BEGIN_MARKER);
@@ -48,67 +45,61 @@ function isShellWriteToFile(cmd: string, filePath: string): boolean {
   return patterns.some((p) => p.test(cmd));
 }
 
-function resetFile(guard: GuardInfo): void {
-  writeFileSync(guard.filePath, guard.protectedText + "  sorry\n", "utf-8");
+function resetFile(g: GuardInfo): void {
+  writeFileSync(g.filePath, g.protectedText + "  sorry\n", "utf-8");
 }
 
-export default plugin({
-  name: "lean-guard",
+export const LeanGuard: Plugin = async ({ $ }) => {
+  // Parse the proof file eagerly at init
+  guard = parseGuardedFile(PROOF_FILE);
+  if (!guard) {
+    console.error(
+      `[lean-guard] ${PROOF_FILE ? `No guard markers in ${PROOF_FILE}` : "LEAN_GUARD_FILE not set"}, plugin disabled.`
+    );
+    return {};
+  }
 
-  setup(app) {
-    // Eagerly parse the proof file at init so the cache has the original
-    // protected text before the agent makes any edits.
-    const guard = parseGuardedFile(PROOF_FILE);
-    if (guard) {
-      guardCache.set(PROOF_FILE, guard);
-    }
+  return {
+    "tool.execute.before": async (input, output) => {
+      if (!guard) return;
 
-    // Before: block bash commands that write to guarded files
-    app.on("tool.execute.before", (event) => {
-      if (event.tool.name !== "bash") return;
-
-      const input = event.tool.input as Record<string, unknown>;
-      const command = (input.command ?? "") as string;
-
-      for (const [, guard] of guardCache) {
+      // Block bash commands that write to the proof file
+      if (input.tool === "bash") {
+        const command = (output.args?.command ?? "") as string;
         if (isShellWriteToFile(command, guard.filePath)) {
           throw new Error(
             "[lean-guard] Cannot write to the proof file via shell. Use 'edit' to modify only the proof body."
           );
         }
       }
-    });
+    },
 
-    // After: verify protected region is intact
-    app.on("tool.execute.after", (event) => {
-      if (!["edit", "bash"].includes(event.tool.name)) return;
+    "tool.execute.after": async (input, output) => {
+      if (!guard) return;
+      if (!["edit", "bash"].includes(input.tool)) return;
+      if (!existsSync(guard.filePath)) return;
 
-      for (const [filePath, guard] of guardCache) {
-        if (!existsSync(filePath)) continue;
+      const content = readFileSync(guard.filePath, "utf-8");
+      const beginIdx = content.indexOf(BEGIN_MARKER);
+      const endIdx = content.indexOf(END_MARKER);
 
-        const content = readFileSync(filePath, "utf-8");
-        const beginIdx = content.indexOf(BEGIN_MARKER);
-        const endIdx = content.indexOf(END_MARKER);
-
-        if (beginIdx === -1 || endIdx === -1) {
-          resetFile(guard);
-          const output = event.output as { output?: string };
-          output.output = (output.output ?? "") +
-            "\n[lean-guard] Guard markers were removed. The file has been reverted. Do not modify the theorem signature.";
-          return;
-        }
-
-        const endOfEndLine = content.indexOf("\n", endIdx);
-        const protectedEnd = endOfEndLine === -1 ? content.length : endOfEndLine + 1;
-        const currentProtected = content.slice(beginIdx, protectedEnd);
-
-        if (currentProtected !== guard.protectedText) {
-          resetFile(guard);
-          const output = event.output as { output?: string };
-          output.output = (output.output ?? "") +
-            "\n[lean-guard] The theorem signature was modified. The file has been reverted. Only edit the proof body.";
-        }
+      if (beginIdx === -1 || endIdx === -1) {
+        resetFile(guard);
+        throw new Error(
+          "[lean-guard] Guard markers were removed. The file has been reverted. Do not modify the theorem signature."
+        );
       }
-    });
-  },
-});
+
+      const endOfEndLine = content.indexOf("\n", endIdx);
+      const protectedEnd = endOfEndLine === -1 ? content.length : endOfEndLine + 1;
+      const currentProtected = content.slice(beginIdx, protectedEnd);
+
+      if (currentProtected !== guard.protectedText) {
+        resetFile(guard);
+        throw new Error(
+          "[lean-guard] The theorem signature was modified. The file has been reverted. Only edit the proof body."
+        );
+      }
+    },
+  };
+};
